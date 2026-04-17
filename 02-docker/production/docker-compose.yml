@@ -1,18 +1,6 @@
 # ============================================================
-# Docker Compose — Full Agent Stack
-#
-# Services:
-#   1. agent    — FastAPI AI agent (2 replicas)
-#   2. redis    — Cache cho session và rate limiting
-#   3. qdrant   — Vector database cho RAG
-#   4. nginx    — Reverse proxy, load balancer
-#
-# Chạy: docker compose up
-# Test:  curl http://localhost/health
-# Stop:  docker compose down
+# Docker Compose — Full Agent Stack (Fixed Healthcheck)
 # ============================================================
-
-version: "3.9"
 
 services:
 
@@ -21,37 +9,36 @@ services:
   # ──────────────────────────────────────
   agent:
     build:
-      context: .
-      dockerfile: Dockerfile
-      target: runtime          # chỉ build stage "runtime", không build "builder"
+      context: ../../
+      dockerfile: 02-docker/production/Dockerfile
+      target: runtime
+    deploy:
+      replicas: 2
     environment:
       - ENVIRONMENT=staging
       - PORT=8000
       - REDIS_URL=redis://redis:6379/0
       - QDRANT_URL=http://qdrant:6333
-      # ❌ KHÔNG đặt secrets trực tiếp ở đây trong production
-      # ✅ Dùng: docker secret hoặc env file ngoài git
     env_file:
-      - .env.local              # secrets riêng, trong .gitignore
+      - .env.local
     depends_on:
       redis:
         condition: service_healthy
       qdrant:
-        condition: service_healthy
+        condition: service_started # Đổi từ healthy sang started để tránh bị kẹt nếu DB khởi động chậm
     healthcheck:
-      test: ["CMD", "python", "-c",
-             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
+      # Kiểm tra cổng 8000 của chính Agent
+      test: [ "CMD-SHELL", "timeout 5s bash -c ':> /dev/tcp/127.0.0.1/8000' || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     restart: unless-stopped
-    # Không expose port trực tiếp — dùng qua Nginx
     networks:
       - internal
 
   # ──────────────────────────────────────
-  # Redis — Session cache & Rate limiting
+  # Redis
   # ──────────────────────────────────────
   redis:
     image: redis:7-alpine
@@ -59,7 +46,7 @@ services:
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: [ "CMD", "redis-cli", "ping" ]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -74,39 +61,38 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
-      interval: 15s
+      # Lệnh kiểm tra an toàn: Thử curl, nếu không có dùng bash tcp check
+      test: [ "CMD-SHELL", "curl -f http://localhost:6333/health || (echo > /dev/tcp/127.0.0.1/6333) || exit 1" ]
+      interval: 10s
       timeout: 5s
-      retries: 3
+      retries: 5
+      start_period: 20s # Cho Qdrant 20 giây để khởi động xong xuôi
     networks:
       - internal
 
   # ──────────────────────────────────────
-  # Nginx — Reverse proxy & Load balancer
+  # Nginx
   # ──────────────────────────────────────
   nginx:
     image: nginx:alpine
     ports:
-      - "80:80"      # HTTP
-      - "443:443"    # HTTPS (cần cert)
+      - "80:80"
+      - "443:443"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
-      - agent
+      agent:
+        condition: service_started # Chờ Agent chạy là Nginx lên luôn
     restart: unless-stopped
     networks:
       - internal
 
 # ──────────────────────────────────────
-# Volumes — persistent data
-# ──────────────────────────────────────
 volumes:
   redis_data:
   qdrant_data:
 
-# ──────────────────────────────────────
-# Network — isolate internal traffic
-# ──────────────────────────────────────
+
 networks:
   internal:
     driver: bridge
