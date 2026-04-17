@@ -33,3 +33,4 @@ services:
     region: singapore
     plan: free # Note: Render free Redis drops data occasionally, suitable for rate limit/budget
     maxmemoryPolicy: allkeys-lru
+    ipAllowList: []
