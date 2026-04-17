@@ -2,6 +2,7 @@ services:
   - type: web
     name: ai-agent-production
     runtime: docker
+    rootDir: 06-lab-complete
     region: singapore
     plan: starter
     healthCheckPath: /health
@@ -21,3 +22,14 @@ services:
         value: "5.0"
       - key: RATE_LIMIT_PER_MINUTE
         value: "20"
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: agent-redis
+          property: connectionString
+
+  - type: redis
+    name: agent-redis
+    region: singapore
+    plan: free # Note: Render free Redis drops data occasionally, suitable for rate limit/budget
+    maxmemoryPolicy: allkeys-lru

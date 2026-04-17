@@ -31,8 +31,9 @@ import uvicorn
 
 from app.config import settings
 
-# Mock LLM (thay bằng OpenAI/Anthropic khi có API key)
-from utils.mock_llm import ask as llm_ask
+# Day07 RAG Agent Integration
+class RAGState:
+    agent = None
 
 # ─────────────────────────────────────────────────────────
 # Logging — JSON structured
@@ -111,6 +112,35 @@ async def lifespan(app: FastAPI):
         "environment": settings.environment,
     }))
     time.sleep(0.1)  # simulate init
+    
+    try:
+        from app.rag.agent import KnowledgeBaseAgent
+        from app.rag.store import EmbeddingStore
+        from app.rag.embeddings import _mock_embed, OpenAIEmbedder
+        
+        if settings.openai_api_key and settings.openai_api_key != "mock":
+            import openai
+            client = openai.OpenAI(api_key=settings.openai_api_key)
+            embedder = OpenAIEmbedder()
+            embedder.client = client  # override client using env
+            
+            def real_llm(prompt: str) -> str:
+                res = client.chat.completions.create(
+                    model=settings.llm_model,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                return res.choices[0].message.content
+                
+            store = EmbeddingStore("production_store", embedder)
+            RAGState.agent = KnowledgeBaseAgent(store, real_llm)
+        else:
+            def demo_llm(prompt: str) -> str:
+                return "Mock RAG Answer (OPENAI_API_KEY not set)"
+            store = EmbeddingStore("mock_store", _mock_embed)
+            RAGState.agent = KnowledgeBaseAgent(store, demo_llm)
+    except Exception as e:
+        logger.error(json.dumps({"event": "rag_init_failed", "error": str(e)}))
+
     _is_ready = True
     logger.info(json.dumps({"event": "ready"}))
 
@@ -216,7 +246,10 @@ async def ask_agent(
         "client": str(request.client.host) if request.client else "unknown",
     }))
 
-    answer = llm_ask(body.question)
+    if RAGState.agent:
+        answer = RAGState.agent.answer(body.question)
+    else:
+        answer = "RAG Agent not available due to initialization failure."
 
     output_tokens = len(answer.split()) * 2
     check_and_record_cost(0, output_tokens)
